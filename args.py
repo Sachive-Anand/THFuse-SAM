@@ -1,10 +1,9 @@
-epochs = 2  
-batch_size = 2  
+epochs = 10  
+batch_size = 8  # Increased for Colab GPU (can go higher if you have memory)
 image_height = 256 
 image_width = 256
-train_num = 7601  
+train_num = 9588  # All images from set03 + set05
 learning_rate = 1e-4
 learning_rate_d = 1e-4
-log_interval = 10
-dataset_path = "/content/visible-infrared-wildfire-experiment/m300_grabbed_data_1_51.2/m300_grabbed_data_1_51.2/rgb"
-save_model_path = "/content/"
+log_interval = 20  # Increased since we have more batches
+save_model_path = "/content/models/"  # Local storage
