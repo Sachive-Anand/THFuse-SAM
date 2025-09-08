@@ -14,7 +14,6 @@ class ConvLayer(torch.nn.Module):
         self.is_last = is_last
 
     def forward(self, x):
-        x = x.cuda()
         out = self.reflection_pad(x)
         out = self.conv2d(out)
         if self.is_last is False:
@@ -93,8 +92,31 @@ class Fusenet(nn.Module):
 
         self.ctrans3 = Channel(size=32, embed_dim=128, patch_size=16, channel=64)
         self.strans3 = Spatial(size=256, embed_dim=1024*2, patch_size=4, channel=64)
+        
+        # Add convolution layers to process the mask to match feature dimensions at different levels
+        self.mask_processor_x3 = nn.Sequential(
+            nn.AvgPool2d(8),  # Downsample to match x3 size (32x32)
+            nn.Conv2d(1, 64, kernel_size=1, stride=1),  # Match channel dimension
+            nn.Sigmoid()  # Ensure values are in [0,1] range
+        )
+        
+        self.mask_processor_x2 = nn.Sequential(
+            nn.AvgPool2d(4),  # Downsample to match x2 size (64x64)
+            nn.Conv2d(1, 64, kernel_size=1, stride=1),  # Match channel dimension
+            nn.Sigmoid()  # Ensure values are in [0,1] range
+        )
+        
+        self.mask_processor_x1 = nn.Sequential(
+            nn.AvgPool2d(2),  # Downsample to match x1 size (128x128)
+            nn.Conv2d(1, 64, kernel_size=1, stride=1),  # Match channel dimension
+            nn.Sigmoid()  # Ensure values are in [0,1] range
+        )
+        
+        self.mask_processor_x0 = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size=1, stride=1),  # Match channel dimension (256x256)
+            nn.Sigmoid()  # Ensure values are in [0,1] range
+        )
 
-    # <-- MODIFIED: Added 'mask' as the third input argument
     def forward(self, vi, ir, mask):
         f0 = torch.cat([vi, ir], dim=1)
         x = self.conv_in1(f0)
@@ -117,21 +139,28 @@ class Fusenet(nn.Module):
         x2 = self.en2(self.down1(x1))
         x3 = self.en3(self.down1(x2))
 
-        # <-- ADDED: Downsample the mask to match the size of the deep feature map (x3)
-        mask_downsampled = F.interpolate(mask, size=x3.shape[2:], mode='bilinear', align_corners=False)
-
+        # Process the mask to match different feature dimensions
+        processed_mask_x3 = self.mask_processor_x3(mask)
+        processed_mask_x2 = self.mask_processor_x2(mask)
+        processed_mask_x1 = self.mask_processor_x1(mask)
+        processed_mask_x0 = self.mask_processor_x0(mask)
+        
+        # Process features through transformer
         x3t = self.strans3(self.ctrans3(x3))
         
-        # <-- MODIFIED: Inject the SAM mask into the model's attention map
-        # This adds the external semantic guidance to the model's internal learned guidance.
-        x3m = x3t + mask_downsampled
+        # Fuse SAM mask with attention features using element-wise multiplication
+        x3m = x3t * processed_mask_x3
         
         x3r = x3 * x3m
-        x2m = self.up1(x3m)
+        
+        # Process masks for different levels
+        x2m = self.up1(x3m) * processed_mask_x2
         x2r = x2 * x2m
-        x1m = self.up1(x2m) + self.up2(x3m)
+        
+        x1m = (self.up1(x2m) + self.up2(x3m)) * processed_mask_x1
         x1r = x1 * x1m
-        x0m = self.up1(x1m) + self.up2(x2m) + self.up3(x3m)
+        
+        x0m = (self.up1(x1m) + self.up2(x2m) + self.up3(x3m)) * processed_mask_x0
         x0r = x0 * x0m
 
         other = self.up3(x3r) + self.up2(x2r) + self.up1(x1r) + x0r
